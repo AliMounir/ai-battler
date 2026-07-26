@@ -32,9 +32,9 @@ test("server-renders the Arena product shell and metadata", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Arena — Model selection, measured<\/title>/i);
-  assert.match(html, /One prompt\. Every contender\. No hand-waving\./);
-  assert.match(html, /DEEPINFRA ·[\s\S]{0,40}CONNECT/);
-  assert.match(html, /aria-label="Catalog"/);
+  assert.match(html, /Compare models/);
+  assert.match(html, /Connect API/);
+  assert.match(html, /aria-label="Models"/);
   assert.match(html, /og\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

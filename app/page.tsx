@@ -82,7 +82,7 @@ type SortKey =
   | "output"
   | "type";
 
-const MODEL_COLORS = ["#315BFF", "#E4603F", "#168C80", "#805AD5", "#B98214"];
+const MODEL_COLORS = ["#6E8BFF", "#FF795F", "#42C7B5", "#A98AFF", "#E9B949"];
 const DEFAULT_PROMPT =
   "Design a PostgreSQL schema and zero-downtime migration strategy for a multi-tenant analytics product. Include SQL, state assumptions, and explain the trade-offs.";
 const STORAGE_KEY = "arena-saved-runs-v1";
@@ -373,15 +373,6 @@ function rankResults(results: LaneResult[]) {
     throughput: maxBy("tokensPerSecond"),
     quality: maxBy("rating"),
   };
-}
-
-function NavMark({ label }: { label: string }) {
-  const marks: Record<string, string> = {
-    Compare: "≋",
-    Catalog: "⊞",
-    Runs: "↺",
-  };
-  return <span aria-hidden="true">{marks[label]}</span>;
 }
 
 function Metric({
@@ -1094,15 +1085,24 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <aside className="spine">
-        <button className="brand-mark" onClick={() => setView("compare")} aria-label="Arena home">
-          A
+      <header className="top-nav">
+        <button
+          type="button"
+          className="top-brand"
+          onClick={() => setView("compare")}
+          aria-label="Arena home"
+        >
+          <span>A</span>
+          <div>
+            <strong>Arena</strong>
+            <small>Model lab</small>
+          </div>
         </button>
-        <nav aria-label="Primary navigation">
+        <nav className="top-tabs" aria-label="Primary navigation">
           {(
             [
               ["compare", "Compare"],
-              ["catalog", "Catalog"],
+              ["catalog", "Models"],
               ["runs", "Runs"],
             ] as const
           ).map(([destination, label]) => (
@@ -1112,67 +1112,42 @@ export default function Home() {
               className={view === destination ? "active" : ""}
               onClick={() => setView(destination)}
               aria-label={label}
-              title={label}
             >
-              <NavMark label={label} />
-              <small>{label}</small>
+              {label}
             </button>
           ))}
         </nav>
-        <div className="spine-bottom">
+        <div className="top-actions">
           <button
             type="button"
-            className={apiKey ? "connection-dot connected" : "connection-dot"}
+            className="model-command"
+            onClick={() => setShowModelPicker(true)}
+          >
+            <span>Models</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <button
+            type="button"
+            className={`api-status ${apiKey ? "connected" : ""}`}
             onClick={() => setShowConnection(true)}
-            aria-label={apiKey ? "DeepInfra connected" : "Connect DeepInfra"}
-            title={apiKey ? "DeepInfra connected" : "Connect DeepInfra"}
           >
             <span />
-            <small>API</small>
+            {apiKey ? "Connected" : "Connect API"}
           </button>
         </div>
-      </aside>
+      </header>
 
       <div className="workspace">
-        <header className="lab-header">
-          <div>
-            <span className="eyebrow">
-              {view === "compare" ? "EVALUATION LAB" : view === "catalog" ? "MODEL INTELLIGENCE" : "LOCAL EVIDENCE"}
-            </span>
-            <strong>
-              {view === "compare" ? "Arena" : view === "catalog" ? "Model index" : "Saved runs"}
-            </strong>
-          </div>
-          <div className="header-actions">
-            <button
-              type="button"
-              className="command-button"
-              onClick={() => setShowModelPicker(true)}
-            >
-              <span>Search models or actions</span>
-              <kbd>⌘ K</kbd>
-            </button>
-            <button
-              type="button"
-              className={`api-pill ${apiKey ? "connected" : ""}`}
-              onClick={() => setShowConnection(true)}
-            >
-              <span />
-              DEEPINFRA · {apiKey ? "CONNECTED" : "CONNECT"}
-            </button>
-          </div>
-        </header>
-
         <main>
           {view === "compare" ? (
             <div className="compare-page">
               <section className="compare-hero">
                 <div>
-                  <span className="eyebrow">RUN · {isRunning ? "LIVE" : "READY"}</span>
-                  <h1>One prompt. Every contender. No hand-waving.</h1>
+                  <span className="eyebrow">COMPARE · {isRunning ? "RUNNING" : "READY"}</span>
+                  <h1>Compare models</h1>
                   <p>
-                    Run two to five models under the same conditions, then compare quality,
-                    first-token latency, throughput, usage, and cost in one evidence trail.
+                    Send one prompt to every contender. Compare the answers, speed, tokens,
+                    and cost side by side.
                   </p>
                 </div>
                 <div className="hero-actions">
@@ -1539,10 +1514,10 @@ export default function Home() {
               <section className="page-title-row">
                 <div>
                   <span className="eyebrow">LIVE DEEPINFRA CATALOG</span>
-                  <h1>Every endpoint, reduced to comparable evidence.</h1>
+                  <h1>Find the right model</h1>
                   <p>
-                    Browse all modalities and prices. Chat comparison is enabled only for active
-                    OpenAI-compatible text models.
+                    Search the full catalog, compare capabilities and prices, then add active
+                    chat models directly to your test.
                   </p>
                 </div>
                 <button type="button" className="primary-button" onClick={() => void loadCatalog()}>
@@ -1839,10 +1814,10 @@ export default function Home() {
               <section className="page-title-row">
                 <div>
                   <span className="eyebrow">YOUR LOCAL EVIDENCE</span>
-                  <h1>Decisions should survive the demo.</h1>
+                  <h1>Saved runs</h1>
                   <p>
-                    Saved runs preserve prompts, settings, outputs, usage, timing, and the price
-                    evidence you saw. Credentials are never included.
+                    Reopen comparisons with prompts, outputs, ratings, usage, timing, and cost
+                    evidence intact. Credentials are never saved.
                   </p>
                 </div>
                 <button type="button" className="primary-button" onClick={() => setView("compare")}>
