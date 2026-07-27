@@ -20,8 +20,8 @@
   --danger: #ff795f;
   --spine-width: 0px;
   --header-height: 68px;
-  --sans: var(--font-geist-sans), "Helvetica Neue", Arial, sans-serif;
-  --mono: var(--font-geist-mono), "SFMono-Regular", Consolas, monospace;
+  --sans: "Helvetica Neue", Arial, sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
 }
 
