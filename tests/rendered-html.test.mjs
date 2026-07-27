@@ -73,4 +73,6 @@ test("keeps completed comparisons traceable in the interface", async () => {
     page.indexOf('className="response-grid"') < page.indexOf('aria-label="Model metric overview"'),
     "the response cards should appear before the overview table",
   );
+  assert.match(page, /\["Quality", "quality"\]/);
+  assert.match(page, /changeOverviewSort\(key\)/);
 });

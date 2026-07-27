@@ -3901,11 +3901,11 @@ body {
 .metric-matrix-head,
 .metric-matrix-row {
   display: grid;
-  min-width: 820px;
+  min-width: 960px;
   grid-template-columns:
     minmax(180px, 1.5fr)
     minmax(100px, 0.75fr)
-    repeat(5, minmax(96px, 0.75fr));
+    repeat(6, minmax(96px, 0.75fr));
   align-items: center;
 }
 
@@ -3951,6 +3951,28 @@ body {
   border-right: 0;
 }
 
+.metric-matrix-head button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.metric-matrix-head button:hover {
+  color: var(--ink);
+}
+
+.metric-matrix-head button:focus-visible {
+  outline: 1px solid var(--action);
+  outline-offset: 3px;
+}
+
 .matrix-model i {
   width: 4px;
   height: 24px;
@@ -3965,6 +3987,10 @@ body {
   font-family: var(--sans);
   font-size: 10px;
   text-overflow: ellipsis;
+}
+
+.matrix-quality {
+  color: var(--ink);
 }
 
 .matrix-status {

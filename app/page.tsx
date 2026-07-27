@@ -86,6 +86,16 @@ type SortKey =
   | "output"
   | "type";
 
+type OverviewSortKey =
+  | "model"
+  | "status"
+  | "quality"
+  | "ttft"
+  | "speed"
+  | "tokens"
+  | "latency"
+  | "cost";
+
 const MODEL_COLORS = ["#6E8BFF", "#FF795F", "#42C7B5", "#A98AFF", "#E9B949"];
 const MIN_OUTPUT_TOKENS = 64;
 const MAX_OUTPUT_TOKENS = 16384;
@@ -377,6 +387,10 @@ function formatResultCost(result: LaneResult) {
   return `${prefix}${formatMoney(result.cost)}`;
 }
 
+function formatQuality(result: LaneResult) {
+  return result.rating == null ? "Not rated" : `${result.rating} / 5`;
+}
+
 function pricingRecord(model: LabModel) {
   const pricing = (model.pricing ?? {}) as Record<string, unknown>;
   return pricing.raw && typeof pricing.raw === "object"
@@ -564,6 +578,8 @@ export default function Home() {
   const [capability, setCapability] = useState("all");
   const [sortKey, setSortKey] = useState<SortKey>("model");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [overviewSortKey, setOverviewSortKey] = useState<OverviewSortKey | null>(null);
+  const [overviewSortDirection, setOverviewSortDirection] = useState<"asc" | "desc">("asc");
   const [detailModelId, setDetailModelId] = useState<string | null>(null);
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>([]);
   const [runMessage, setRunMessage] = useState("");
@@ -647,6 +663,52 @@ export default function Home() {
     const unselectedResults = results.filter((result) => !selectedModelIds.includes(result.modelId));
     return [...selectedResults, ...unselectedResults];
   }, [results, selectedModelIds]);
+  const sortedOverviewResults = useMemo(() => {
+    const indexedResults = orderedResults.map((result, sourceIndex) => ({ result, sourceIndex }));
+    if (!overviewSortKey) return indexedResults;
+
+    const statusOrder: Record<RunStatus, number> = {
+      complete: 0,
+      streaming: 1,
+      queued: 2,
+      idle: 3,
+      aborted: 4,
+      error: 5,
+    };
+    const valueFor = ({ result }: (typeof indexedResults)[number]) => {
+      switch (overviewSortKey) {
+        case "model":
+          return (modelById.get(result.modelId)?.name ?? shortName(result.modelId)).toLowerCase();
+        case "status":
+          return statusOrder[result.status];
+        case "quality":
+          return result.rating;
+        case "ttft":
+          return result.ttftMs;
+        case "speed":
+          return result.tokensPerSecond;
+        case "tokens":
+          return result.usage?.total_tokens ?? null;
+        case "latency":
+          return result.totalMs;
+        case "cost":
+          return result.cost;
+      }
+    };
+    const direction = overviewSortDirection === "asc" ? 1 : -1;
+
+    return [...indexedResults].sort((left, right) => {
+      const leftValue = valueFor(left);
+      const rightValue = valueFor(right);
+      if (leftValue == null) return rightValue == null ? left.sourceIndex - right.sourceIndex : 1;
+      if (rightValue == null) return -1;
+      const comparison =
+        typeof leftValue === "string" && typeof rightValue === "string"
+          ? leftValue.localeCompare(rightValue)
+          : Number(leftValue) - Number(rightValue);
+      return comparison === 0 ? left.sourceIndex - right.sourceIndex : comparison * direction;
+    });
+  }, [modelById, orderedResults, overviewSortDirection, overviewSortKey]);
   const rank = useMemo(() => rankResults(results), [results]);
   const isRunning = results.some(
     (result) => result.status === "queued" || result.status === "streaming",
@@ -1316,6 +1378,20 @@ export default function Home() {
     return `${label}${sortKey === key ? (sortDirection === "asc" ? " ↑" : " ↓") : ""}`;
   }
 
+  function changeOverviewSort(nextKey: OverviewSortKey) {
+    if (nextKey === overviewSortKey) {
+      setOverviewSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setOverviewSortKey(nextKey);
+      setOverviewSortDirection("asc");
+    }
+  }
+
+  function renderOverviewSortLabel(label: string, key: OverviewSortKey) {
+    if (overviewSortKey !== key) return `${label} ↕`;
+    return `${label} ${overviewSortDirection === "asc" ? "↑" : "↓"}`;
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -1825,15 +1901,36 @@ export default function Home() {
                   </div>
                   <div className="metric-matrix" role="table" aria-label="Model metric overview">
                     <div className="metric-matrix-head" role="row">
-                      <span role="columnheader">Model</span>
-                      <span role="columnheader">Status</span>
-                      <span role="columnheader">TTFT</span>
-                      <span role="columnheader">Speed</span>
-                      <span role="columnheader">Tokens</span>
-                      <span role="columnheader">Latency</span>
-                      <span role="columnheader">Cost</span>
+                      {(
+                        [
+                          ["Model", "model"],
+                          ["Status", "status"],
+                          ["Quality", "quality"],
+                          ["TTFT", "ttft"],
+                          ["Speed", "speed"],
+                          ["Tokens", "tokens"],
+                          ["Latency", "latency"],
+                          ["Cost", "cost"],
+                        ] as const
+                      ).map(([label, key]) => (
+                        <span
+                          role="columnheader"
+                          aria-sort={
+                            overviewSortKey === key
+                              ? overviewSortDirection === "asc"
+                                ? "ascending"
+                                : "descending"
+                              : "none"
+                          }
+                          key={key}
+                        >
+                          <button type="button" onClick={() => changeOverviewSort(key)}>
+                            {renderOverviewSortLabel(label, key)}
+                          </button>
+                        </span>
+                      ))}
                     </div>
-                    {orderedResults.map((result, index) => {
+                    {sortedOverviewResults.map(({ result, sourceIndex }) => {
                       const model =
                         modelById.get(result.modelId) ??
                         DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
@@ -1843,19 +1940,22 @@ export default function Home() {
                           className="metric-matrix-row"
                           role="row"
                           key={`overview-${result.modelId}`}
-                          style={{ "--model-color": MODEL_COLORS[index] } as CSSProperties}
+                          style={{ "--model-color": MODEL_COLORS[sourceIndex] } as CSSProperties}
                         >
                           <span className="matrix-model" role="cell">
                             <i />
                             <strong>
                               {blindReview
-                                ? `Contender ${String.fromCharCode(65 + index)}`
+                                ? `Contender ${String.fromCharCode(65 + sourceIndex)}`
                                 : model.name || shortName(model.id)}
                             </strong>
                           </span>
                           <span role="cell">
                             <i className={`matrix-status status-${result.status}`} />
                             {statusLabel(result.status)}
+                          </span>
+                          <span className="matrix-quality" role="cell" title="Manual quality rating">
+                            {formatQuality(result)}
                           </span>
                           <span role="cell">{formatTtft(result)}</span>
                           <span role="cell">{formatSpeed(result)}</span>
