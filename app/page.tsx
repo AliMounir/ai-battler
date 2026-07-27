@@ -66,6 +66,8 @@ type LaneResult = {
   isExample?: boolean;
 };
 
+type ServiceTier = "default" | "priority" | "flex";
+
 type SavedRun = {
   id: string;
   sequence?: number;
@@ -73,7 +75,11 @@ type SavedRun = {
   title: string;
   prompt: string;
   systemPrompt: string;
-  settings: { temperature: number; maxTokens: number };
+  settings: {
+    temperature: number;
+    maxTokens: number;
+    serviceTiers?: Record<string, ServiceTier>;
+  };
   modelIds: string[];
   results: LaneResult[];
 };
@@ -556,6 +562,7 @@ export default function Home() {
   const [temperature, setTemperature] = useState(0.2);
   const [maxTokens, setMaxTokens] = useState(1200);
   const [maxTokensInput, setMaxTokensInput] = useState("1200");
+  const [modelServiceTiers, setModelServiceTiers] = useState<Record<string, ServiceTier>>({});
   const [activeRunNumber, setActiveRunNumber] = useState(1);
   const [nextRunNumber, setNextRunNumber] = useState(1);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -928,7 +935,16 @@ export default function Home() {
       title: frozenPrompt.split(/[.!?]/)[0].slice(0, 72) || "Untitled comparison",
       prompt: frozenPrompt,
       systemPrompt,
-      settings: { temperature, maxTokens: runMaxTokens },
+      settings: {
+        temperature,
+        maxTokens: runMaxTokens,
+        serviceTiers: Object.fromEntries(
+          selectedModels.map((model) => [
+            model.id,
+            modelServiceTiers[model.id] ?? ("default" as ServiceTier),
+          ]),
+        ),
+      },
       modelIds: selectedModels.map((model) => model.id),
     };
     controllersRef.current.forEach((controller) => controller.abort());
@@ -977,6 +993,7 @@ export default function Home() {
             settings: {
               temperature,
               maxTokens: runMaxTokens,
+              serviceTier: modelServiceTiers[model.id] ?? "default",
             },
             signal: controller.signal,
             onDelta: (delta: string) => {
@@ -1141,7 +1158,11 @@ export default function Home() {
             : []),
           { role: "user" as const, content: activePrompt },
         ],
-        settings: { temperature, maxTokens: rerunMaxTokens },
+        settings: {
+          temperature,
+          maxTokens: rerunMaxTokens,
+          serviceTier: modelServiceTiers[model.id] ?? "default",
+        },
         signal: controller.signal,
         onDelta: (delta: string) => {
           receivedContent += delta;
@@ -1304,7 +1325,16 @@ export default function Home() {
       title: activePrompt.split(/[.!?]/)[0].slice(0, 72) || "Untitled comparison",
       prompt: activePrompt,
       systemPrompt,
-      settings: { temperature, maxTokens: savedMaxTokens },
+      settings: {
+        temperature,
+        maxTokens: savedMaxTokens,
+        serviceTiers: Object.fromEntries(
+          results.map((result) => [
+            result.modelId,
+            modelServiceTiers[result.modelId] ?? ("default" as ServiceTier),
+          ]),
+        ),
+      },
       modelIds: results.map((result) => result.modelId),
       results,
     };
@@ -1326,6 +1356,7 @@ export default function Home() {
     const loadedMaxTokens = normalizeOutputTokenLimit(run.settings.maxTokens);
     setMaxTokens(loadedMaxTokens);
     setMaxTokensInput(String(loadedMaxTokens));
+    setModelServiceTiers(run.settings.serviceTiers ?? {});
     setActiveRunNumber(run.sequence ?? activeRunNumber);
     currentRunIdRef.current = run.id;
     setSelectedModelIds(run.modelIds.slice(0, 5));
@@ -1348,7 +1379,7 @@ export default function Home() {
       exportedAt: new Date().toISOString(),
       prompt: activePrompt,
       systemPrompt,
-      settings: { temperature, maxTokens },
+      settings: { temperature, maxTokens, serviceTiers: modelServiceTiers },
       models: selectedModels,
       results,
       notes:
@@ -1476,15 +1507,7 @@ export default function Home() {
         <main>
           {view === "compare" ? (
             <div className="compare-page">
-              <section className="compare-hero">
-                <div>
-                  <span className="eyebrow">COMPARE · {isRunning ? "RUNNING" : "READY"}</span>
-                  <h1>Compare models</h1>
-                  <p>
-                    Send one prompt to every contender. Compare the answers, speed, tokens,
-                    and cost side by side.
-                  </p>
-                </div>
+              <div className="page-actions" aria-label="Comparison actions">
                 <div className="hero-actions">
                   <button type="button" className="secondary-button" onClick={saveRun}>
                     Save run
@@ -1493,7 +1516,7 @@ export default function Home() {
                     Export JSON
                   </button>
                 </div>
-              </section>
+              </div>
 
               <section className="run-strip" aria-label="Run setup">
                 <div className="run-id">
@@ -1567,6 +1590,43 @@ export default function Home() {
                   <div className="settings-note">
                     Unsupported options are omitted per model. Every run snapshots the applied
                     configuration.
+                  </div>
+                  <div className="tier-settings">
+                    <div className="tier-settings-heading">
+                      <span>Service tier per contender</span>
+                      <small>Priority favors speed; Flex is available only on tagged models.</small>
+                    </div>
+                    <div className="tier-grid">
+                      {selectedModels.map((model, index) => {
+                        const supportsPriority = model.tags.includes("priority");
+                        const supportsFlex = model.tags.includes("flex");
+                        const tier = modelServiceTiers[model.id] ?? "default";
+                        return (
+                          <label className="tier-model" key={model.id}>
+                            <i style={{ background: MODEL_COLORS[index] }} />
+                            <span title={model.id}>{model.name || shortName(model.id)}</span>
+                            <select
+                              value={tier}
+                              onChange={(event) =>
+                                setModelServiceTiers((current) => ({
+                                  ...current,
+                                  [model.id]: event.target.value as ServiceTier,
+                                }))
+                              }
+                              aria-label={`${model.name || shortName(model.id)} service tier`}
+                            >
+                              <option value="default">Standard</option>
+                              <option value="priority" disabled={!supportsPriority}>
+                                Priority{supportsPriority ? "" : " — unavailable"}
+                              </option>
+                              <option value="flex" disabled={!supportsFlex}>
+                                Flex{supportsFlex ? "" : " — unavailable"}
+                              </option>
+                            </select>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
                 </section>
               ) : null}
@@ -1979,19 +2039,11 @@ export default function Home() {
 
           {view === "catalog" ? (
             <div className="catalog-page">
-              <section className="page-title-row">
-                <div>
-                  <span className="eyebrow">LIVE DEEPINFRA CATALOG</span>
-                  <h1>Find the right model</h1>
-                  <p>
-                    Search the full catalog, compare capabilities and prices, then add active
-                    chat models directly to your test.
-                  </p>
-                </div>
+              <div className="page-actions" aria-label="Catalog actions">
                 <button type="button" className="primary-button" onClick={() => void loadCatalog()}>
                   Refresh catalog
                 </button>
-              </section>
+              </div>
 
               <section className="catalog-ledger">
                 <div>
@@ -2279,19 +2331,11 @@ export default function Home() {
 
           {view === "runs" ? (
             <div className="runs-page">
-              <section className="page-title-row">
-                <div>
-                  <span className="eyebrow">YOUR LOCAL EVIDENCE</span>
-                  <h1>Saved runs</h1>
-                  <p>
-                    Reopen comparisons with prompts, outputs, ratings, usage, timing, and cost
-                    evidence intact. Credentials are never saved.
-                  </p>
-                </div>
+              <div className="page-actions" aria-label="Run actions">
                 <button type="button" className="primary-button" onClick={() => setView("compare")}>
                   New comparison
                 </button>
-              </section>
+              </div>
 
               <section className="benchmark-presets">
                 <div className="preset-intro">

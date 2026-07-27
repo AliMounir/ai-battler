@@ -12,9 +12,10 @@ test("reads reasoning, structured content, usage, and full-message fallbacks", a
   const reasoning = [];
   const output = [];
   globalThis.fetch = async (_url, options) => {
-    const body = JSON.parse(options.body);
-    assert.equal(body.stream, true);
-    assert.deepEqual(body.stream_options, { include_usage: true });
+  const body = JSON.parse(options.body);
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_usage: true });
+  assert.equal(body.service_tier, "priority");
 
     return new Response(
       [
@@ -38,6 +39,7 @@ test("reads reasoning, structured content, usage, and full-message fallbacks", a
     apiKey: "test-key",
     model: "provider/model",
     messages: [{ role: "user", content: "Hello" }],
+    settings: { serviceTier: "priority" },
     onDelta: (value) => output.push(value),
     onReasoning: (value) => reasoning.push(value),
   });

@@ -32,7 +32,7 @@ test("server-renders the Arena product shell and metadata", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Arena — Model selection, measured<\/title>/i);
-  assert.match(html, /Compare models/);
+  assert.match(html, /aria-label="Compare"/);
   assert.match(html, /Connect API/);
   assert.match(html, /aria-label="Models"/);
   assert.match(html, /Responses and evidence/);
@@ -75,4 +75,9 @@ test("keeps completed comparisons traceable in the interface", async () => {
   );
   assert.match(page, /\["Quality", "quality"\]/);
   assert.match(page, /changeOverviewSort\(key\)/);
+  assert.match(page, /Service tier per contender/);
+  assert.match(page, /serviceTier: modelServiceTiers\[model\.id\] \?\? "default"/);
+  assert.doesNotMatch(page, /<h1>Compare models<\/h1>/);
+  assert.doesNotMatch(page, /<h1>Find the right model<\/h1>/);
+  assert.doesNotMatch(page, /<h1>Saved runs<\/h1>/);
 });
