@@ -17,6 +17,7 @@ import { scoreModelFit } from "./lib/lab-metrics";
 type View = "compare" | "catalog" | "runs";
 type CatalogView = "table" | "map";
 type RunStatus = "idle" | "queued" | "streaming" | "complete" | "error" | "aborted";
+type UsageSource = "reported" | "estimated" | "unavailable";
 
 type LabModel = {
   id: string;
@@ -54,9 +55,11 @@ type LaneResult = {
   ttftMs: number | null;
   totalMs: number | null;
   tokensPerSecond: number | null;
+  tokensPerSecondEstimated?: boolean;
   usage: Usage | null;
+  usageSource?: UsageSource;
   cost: number | null;
-  costSource: "reported" | "catalog" | "unknown";
+  costSource: "reported" | "catalog" | "catalog-estimate" | "unknown";
   finishReason: string | null;
   error: string | null;
   rating: number | null;
@@ -206,6 +209,7 @@ const DEMO_RESULTS: LaneResult[] = [
     totalMs: 8420,
     tokensPerSecond: 74.8,
     usage: { prompt_tokens: 42, completion_tokens: 598, total_tokens: 640 },
+    usageSource: "reported",
     cost: 0.000497,
     costSource: "catalog",
     finishReason: "stop",
@@ -223,6 +227,7 @@ const DEMO_RESULTS: LaneResult[] = [
     totalMs: 11320,
     tokensPerSecond: 62.1,
     usage: { prompt_tokens: 42, completion_tokens: 661, total_tokens: 703 },
+    usageSource: "reported",
     cost: 0.004021,
     costSource: "catalog",
     finishReason: "stop",
@@ -240,6 +245,7 @@ const DEMO_RESULTS: LaneResult[] = [
     totalMs: 5980,
     tokensPerSecond: 92.6,
     usage: { prompt_tokens: 42, completion_tokens: 521, total_tokens: 563 },
+    usageSource: "reported",
     cost: 0.000803,
     costSource: "catalog",
     finishReason: "stop",
@@ -274,6 +280,84 @@ function formatMoney(value: number | null, digits = 4) {
   if (value === 0) return "$0";
   if (value < 0.0001) return `$${value.toExponential(2)}`;
   return `$${value.toFixed(digits)}`;
+}
+
+function estimateTokenCount(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return 0;
+  return Math.max(1, Math.ceil(Array.from(normalized).length / 4));
+}
+
+function estimateUsage(
+  prompt: string,
+  systemPrompt: string,
+  content: string,
+  reasoning: string,
+): Usage {
+  const promptTokens = estimateTokenCount(
+    [systemPrompt.trim(), prompt.trim()].filter(Boolean).join("\n"),
+  );
+  const completionTokens = estimateTokenCount(
+    [reasoning.trim(), content.trim()].filter(Boolean).join("\n"),
+  );
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  };
+}
+
+function outputText(result: LaneResult) {
+  return result.content.trim() || result.reasoning.trim();
+}
+
+function metricPendingValue(result: LaneResult, fallback: string) {
+  if (result.status === "queued") return "Queued";
+  if (result.status === "streaming") return "Measuring";
+  return fallback;
+}
+
+function formatTtft(result: LaneResult) {
+  if (result.ttftMs == null) {
+    return metricPendingValue(
+      result,
+      result.status === "complete" ? "No token" : "Not observed",
+    );
+  }
+  return result.ttftMs < 1000
+    ? `${Math.round(result.ttftMs)} ms`
+    : `${(result.ttftMs / 1000).toFixed(2)} s`;
+}
+
+function formatSpeed(result: LaneResult) {
+  if (result.tokensPerSecond == null) {
+    return metricPendingValue(result, "Unavailable");
+  }
+  return `${result.tokensPerSecondEstimated ? "≈" : ""}${result.tokensPerSecond.toFixed(1)} t/s`;
+}
+
+function formatUsage(result: LaneResult) {
+  if (!result.usage) return metricPendingValue(result, "Unavailable");
+  const prefix = result.usageSource === "estimated" ? "≈" : "";
+  return `${prefix}${result.usage.prompt_tokens ?? "?"} → ${
+    result.usage.completion_tokens ?? "?"
+  }`;
+}
+
+function formatLatency(result: LaneResult) {
+  if (result.totalMs == null) return metricPendingValue(result, "Unavailable");
+  return `${(result.totalMs / 1000).toFixed(2)} s`;
+}
+
+function formatResultCost(result: LaneResult) {
+  if (result.cost == null || !Number.isFinite(result.cost)) {
+    return metricPendingValue(result, "Unavailable");
+  }
+  const prefix =
+    result.costSource === "catalog" || result.costSource === "catalog-estimate"
+      ? "≈"
+      : "";
+  return `${prefix}${formatMoney(result.cost)}`;
 }
 
 function pricingRecord(model: LabModel) {
@@ -763,7 +847,9 @@ export default function Home() {
         ttftMs: null,
         totalMs: null,
         tokensPerSecond: null,
+        tokensPerSecondEstimated: false,
         usage: null,
+        usageSource: "unavailable",
         cost: null,
         costSource: "unknown",
         finishReason: null,
@@ -779,6 +865,8 @@ export default function Home() {
         const startedAt = performance.now();
         let firstTokenAt: number | undefined;
         let streamedUsage: Usage | null = null;
+        let receivedContent = "";
+        let receivedReasoning = "";
         updateResult(model.id, { status: "streaming", startedAt });
 
         try {
@@ -797,7 +885,8 @@ export default function Home() {
             },
             signal: controller.signal,
             onDelta: (delta: string) => {
-              if (!firstTokenAt && delta) firstTokenAt = performance.now();
+              receivedContent += delta;
+              if (!firstTokenAt && delta.trim()) firstTokenAt = performance.now();
               setResults((current) =>
                 current.map((result) =>
                   result.modelId === model.id
@@ -813,23 +902,47 @@ export default function Home() {
               );
             },
             onReasoning: (delta: string) => {
+              receivedReasoning += delta;
+              if (!firstTokenAt && delta.trim()) firstTokenAt = performance.now();
               setResults((current) =>
                 current.map((result) =>
                   result.modelId === model.id
-                    ? { ...result, reasoning: result.reasoning + delta }
+                    ? {
+                        ...result,
+                        status: "streaming",
+                        reasoning: result.reasoning + delta,
+                        firstTokenAt,
+                        ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
+                      }
                     : result,
                 ),
               );
             },
             onUsage: (usage: Usage) => {
               streamedUsage = usage;
-              updateResult(model.id, { usage });
+              updateResult(model.id, { usage, usageSource: "reported" });
             },
           });
 
           const endedAt = performance.now();
-          const usage = (response.usage ?? streamedUsage) as Usage | null;
-          const completionTokens = usage?.completion_tokens ?? null;
+          const reportedUsage = (response.usage ?? streamedUsage) as Usage | null;
+          const usage =
+            reportedUsage ??
+            estimateUsage(
+              frozenPrompt,
+              systemPrompt,
+              receivedContent,
+              receivedReasoning,
+            );
+          const reportedCompletionTokens =
+            reportedUsage?.completion_tokens && reportedUsage.completion_tokens > 0
+              ? reportedUsage.completion_tokens
+              : null;
+          const estimatedCompletionTokens = estimateTokenCount(
+            [receivedReasoning, receivedContent].filter(Boolean).join("\n"),
+          );
+          const completionTokens =
+            reportedCompletionTokens ?? (estimatedCompletionTokens || null);
           const generationMs = firstTokenAt ? endedAt - firstTokenAt : null;
           const tokensPerSecond =
             completionTokens != null && generationMs && generationMs > 0
@@ -843,7 +956,9 @@ export default function Home() {
             totalMs: endedAt - startedAt,
             ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
             tokensPerSecond,
+            tokensPerSecondEstimated: reportedCompletionTokens == null,
             usage,
+            usageSource: reportedUsage ? "reported" : "estimated",
             cost:
               typeof reportedCost === "number" && Number.isFinite(reportedCost)
                 ? reportedCost
@@ -852,7 +967,9 @@ export default function Home() {
               typeof reportedCost === "number"
                 ? "reported"
                 : fallbackCost != null
-                  ? "catalog"
+                  ? reportedUsage
+                    ? "catalog"
+                    : "catalog-estimate"
                   : "unknown",
             finishReason: response.finishReason ?? "stop",
           });
@@ -902,13 +1019,18 @@ export default function Home() {
       reasoning: "",
       error: null,
       usage: null,
+      usageSource: "unavailable",
       cost: null,
       ttftMs: null,
       totalMs: null,
       tokensPerSecond: null,
+      tokensPerSecondEstimated: false,
       startedAt,
       isExample: false,
     });
+    let streamedUsage: Usage | null = null;
+    let receivedContent = "";
+    let receivedReasoning = "";
     try {
       const response = await streamChatCompletion({
         apiKey,
@@ -922,7 +1044,8 @@ export default function Home() {
         settings: { temperature, maxTokens },
         signal: controller.signal,
         onDelta: (delta: string) => {
-          if (!firstTokenAt && delta) firstTokenAt = performance.now();
+          receivedContent += delta;
+          if (!firstTokenAt && delta.trim()) firstTokenAt = performance.now();
           setResults((current) =>
             current.map((result) =>
               result.modelId === model.id
@@ -932,13 +1055,50 @@ export default function Home() {
                     firstTokenAt,
                     ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
                   }
+              : result,
+            ),
+          );
+        },
+        onReasoning: (delta: string) => {
+          receivedReasoning += delta;
+          if (!firstTokenAt && delta.trim()) firstTokenAt = performance.now();
+          setResults((current) =>
+            current.map((result) =>
+              result.modelId === model.id
+                ? {
+                    ...result,
+                    reasoning: result.reasoning + delta,
+                    firstTokenAt,
+                    ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
+                  }
                 : result,
             ),
           );
         },
+        onUsage: (usage: Usage) => {
+          streamedUsage = usage;
+          updateResult(model.id, { usage, usageSource: "reported" });
+        },
       });
       const endedAt = performance.now();
-      const usage = response.usage as Usage | null;
+      const reportedUsage = (response.usage ?? streamedUsage) as Usage | null;
+      const usage =
+        reportedUsage ??
+        estimateUsage(
+          activePrompt,
+          systemPrompt,
+          receivedContent,
+          receivedReasoning,
+        );
+      const reportedCompletionTokens =
+        reportedUsage?.completion_tokens && reportedUsage.completion_tokens > 0
+          ? reportedUsage.completion_tokens
+          : null;
+      const estimatedCompletionTokens = estimateTokenCount(
+        [receivedReasoning, receivedContent].filter(Boolean).join("\n"),
+      );
+      const completionTokens =
+        reportedCompletionTokens ?? (estimatedCompletionTokens || null);
       const reported = usage?.estimated_cost;
       const fallback = estimateCatalogCost(model, usage);
       updateResult(model.id, {
@@ -948,21 +1108,28 @@ export default function Home() {
         totalMs: endedAt - startedAt,
         ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
         tokensPerSecond:
-          usage?.completion_tokens && firstTokenAt
-            ? usage.completion_tokens / ((endedAt - firstTokenAt) / 1000)
+          completionTokens && firstTokenAt
+            ? completionTokens / ((endedAt - firstTokenAt) / 1000)
             : null,
+        tokensPerSecondEstimated: reportedCompletionTokens == null,
+        usageSource: reportedUsage ? "reported" : "estimated",
         cost: typeof reported === "number" ? reported : fallback,
         costSource:
           typeof reported === "number"
             ? "reported"
             : fallback != null
-              ? "catalog"
+              ? reportedUsage
+                ? "catalog"
+                : "catalog-estimate"
               : "unknown",
         finishReason: response.finishReason ?? "stop",
       });
     } catch (error) {
+      const endedAt = performance.now();
       updateResult(model.id, {
         status: controller.signal.aborted ? "aborted" : "error",
+        endedAt,
+        totalMs: endedAt - startedAt,
         error: controller.signal.aborted
           ? "Stopped by you. Generated tokens may still be billed."
           : safeErrorMessage(error),
@@ -1274,6 +1441,33 @@ export default function Home() {
 
               {runMessage ? <div className="notice-bar">{runMessage}</div> : null}
 
+              <section className="composer" aria-label="Prompt composer">
+                <div className="composer-meta">
+                  <span>NEW FAIR TEST</span>
+                  <small>
+                    {selectedModels.length} models · key {apiKey ? "in memory" : "not connected"} ·
+                    client-observed timing
+                  </small>
+                </div>
+                <div className="composer-row">
+                  <textarea
+                    ref={promptRef}
+                    rows={3}
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    placeholder="Give every contender the same prompt…"
+                  />
+                  <button
+                    type="button"
+                    className={`run-button ${isRunning ? "stop" : ""}`}
+                    onClick={() => void runComparison()}
+                  >
+                    <span>{isRunning ? "Stop all" : `Run ${selectedModels.length} models`}</span>
+                    <kbd>{isRunning ? "ESC" : "⌘ ↵"}</kbd>
+                  </button>
+                </div>
+              </section>
+
               <section className="synopsis">
                 <div className="synopsis-copy">
                   <span className="eyebrow">
@@ -1319,14 +1513,81 @@ export default function Home() {
                 <p>“{activePrompt}”</p>
               </section>
 
-              <section
-                className="response-grid"
-                style={
-                  {
-                    "--lane-count": Math.max(results.length, 2),
-                  } as CSSProperties
-                }
-              >
+              <section className="results-section" aria-labelledby="results-title">
+                <header className="results-header">
+                  <div>
+                    <span className="eyebrow">MODEL RESULTS</span>
+                    <h2 id="results-title">Responses and evidence</h2>
+                    <p>
+                      Scan the measurements first, then read each answer at a comfortable width.
+                    </p>
+                  </div>
+                  <div className="results-progress" aria-live="polite">
+                    <strong>
+                      {results.filter((result) => result.status === "complete").length}/
+                      {results.length}
+                    </strong>
+                    <span>{isRunning ? "models finished" : "models completed"}</span>
+                  </div>
+                </header>
+
+                <div className="metric-matrix" role="table" aria-label="Model metric overview">
+                  <div className="metric-matrix-head" role="row">
+                    <span role="columnheader">Model</span>
+                    <span role="columnheader">Status</span>
+                    <span role="columnheader">TTFT</span>
+                    <span role="columnheader">Speed</span>
+                    <span role="columnheader">Tokens</span>
+                    <span role="columnheader">Latency</span>
+                    <span role="columnheader">Cost</span>
+                  </div>
+                  {results.map((result, index) => {
+                    const model =
+                      modelById.get(result.modelId) ??
+                      DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
+                    if (!model) return null;
+                    return (
+                      <div
+                        className="metric-matrix-row"
+                        role="row"
+                        key={`overview-${result.modelId}`}
+                        style={{ "--model-color": MODEL_COLORS[index] } as CSSProperties}
+                      >
+                        <span className="matrix-model" role="cell">
+                          <i />
+                          <strong>
+                            {blindReview
+                              ? `Contender ${String.fromCharCode(65 + index)}`
+                              : model.name || shortName(model.id)}
+                          </strong>
+                        </span>
+                        <span role="cell">
+                          <i className={`matrix-status status-${result.status}`} />
+                          {statusLabel(result.status)}
+                        </span>
+                        <span role="cell">{formatTtft(result)}</span>
+                        <span role="cell">{formatSpeed(result)}</span>
+                        <span role="cell">{formatUsage(result)}</span>
+                        <span role="cell">{formatLatency(result)}</span>
+                        <span role="cell">{formatResultCost(result)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="measurement-note">
+                  <strong>How to read this:</strong> ≈ marks a local estimate used only when
+                  DeepInfra omits token usage or cost. “Unavailable” means the provider did not
+                  return enough evidence to calculate that metric.
+                </p>
+
+                <div
+                  className="response-grid"
+                  style={
+                    {
+                      "--lane-count": Math.max(results.length, 2),
+                    } as CSSProperties
+                  }
+                >
                 {results.map((result, index) => {
                   const model =
                     modelById.get(result.modelId) ??
@@ -1335,6 +1596,9 @@ export default function Home() {
                   const displayName = blindReview
                     ? `Contender ${String.fromCharCode(65 + index)}`
                     : model.name || shortName(model.id);
+                  const visibleOutput = outputText(result);
+                  const reasoningOnly =
+                    !result.content.trim() && Boolean(result.reasoning.trim());
                   return (
                     <article
                       className={`response-lane status-${result.status}`}
@@ -1355,7 +1619,7 @@ export default function Home() {
                         </div>
                       </header>
 
-                      {result.reasoning ? (
+                      {result.reasoning && result.content ? (
                         <details className="reasoning-block">
                           <summary>Reasoning trace</summary>
                           <pre>{result.reasoning}</pre>
@@ -1363,8 +1627,19 @@ export default function Home() {
                       ) : null}
 
                       <div className="response-copy">
-                        {result.content ? (
-                          <pre>{result.content}</pre>
+                        {visibleOutput ? (
+                          <>
+                            {reasoningOnly ? (
+                              <div className="response-mode-note">
+                                <strong>Reasoning-only response</strong>
+                                <span>
+                                  This model streamed its working trace but did not send a
+                                  separate final-answer field.
+                                </span>
+                              </div>
+                            ) : null}
+                            <pre>{visibleOutput}</pre>
+                          </>
                         ) : result.status === "queued" || result.status === "streaming" ? (
                           <div className="stream-placeholder">
                             <span />
@@ -1377,10 +1652,22 @@ export default function Home() {
                             <strong>This lane did not complete.</strong>
                             <p>{result.error}</p>
                           </div>
+                        ) : result.status === "complete" ? (
+                          <div className="lane-empty-state">
+                            <strong>No text was returned.</strong>
+                            <p>
+                              DeepInfra completed this request
+                              {result.finishReason
+                                ? ` with finish reason “${result.finishReason}”`
+                                : ""}
+                              , but the model sent no answer or reasoning text. Try rerunning
+                              this lane or increasing the output-token limit.
+                            </p>
+                          </div>
                         ) : (
                           <div className="empty-response">Ready for a live run.</div>
                         )}
-                        {result.status === "streaming" && result.content ? (
+                        {result.status === "streaming" && visibleOutput ? (
                           <span className="stream-cursor" aria-hidden="true" />
                         ) : null}
                       </div>
@@ -1419,57 +1706,47 @@ export default function Home() {
                         <div className="metrics-rail">
                           <Metric
                             label="TTFT"
-                            value={
-                              result.ttftMs == null
-                                ? "—"
-                                : result.ttftMs < 1000
-                                  ? `${Math.round(result.ttftMs)} ms`
-                                  : `${(result.ttftMs / 1000).toFixed(2)} s`
-                            }
+                            value={formatTtft(result)}
                             winner={rank.fastest === result.modelId ? "FASTEST" : undefined}
-                            title="Time from request start to the first rendered token, observed from this device."
+                            title="Time from request start to the first answer or reasoning token, observed from this device."
                           />
                           <Metric
                             label="SPEED"
-                            value={
-                              result.tokensPerSecond == null
-                                ? "—"
-                                : `${result.tokensPerSecond.toFixed(1)} t/s`
-                            }
+                            value={formatSpeed(result)}
                             winner={
                               rank.throughput === result.modelId ? "HIGHEST" : undefined
                             }
-                            title="Completion tokens divided by generation duration."
+                            title={
+                              result.tokensPerSecondEstimated
+                                ? "Locally estimated output tokens divided by generation duration."
+                                : "DeepInfra-reported completion tokens divided by generation duration."
+                            }
                           />
                           <Metric
                             label="TOKENS"
-                            value={
-                              result.usage
-                                ? `${result.usage.prompt_tokens ?? "?"} → ${
-                                    result.usage.completion_tokens ?? "?"
-                                  }`
-                                : "—"
+                            value={formatUsage(result)}
+                            title={
+                              result.usageSource === "estimated"
+                                ? "Approximate prompt tokens → completion tokens, estimated locally."
+                                : "Prompt tokens → completion tokens, as reported by DeepInfra."
                             }
-                            title="Prompt tokens → completion tokens, as reported by DeepInfra."
                           />
                           <Metric
                             label="LATENCY"
-                            value={
-                              result.totalMs == null
-                                ? "—"
-                                : `${(result.totalMs / 1000).toFixed(2)} s`
-                            }
+                            value={formatLatency(result)}
                             title="End-to-end time observed from this device."
                           />
                           <Metric
                             label="COST"
-                            value={formatMoney(result.cost)}
+                            value={formatResultCost(result)}
                             winner={rank.cheapest === result.modelId ? "LOWEST" : undefined}
                             title={
                               result.costSource === "reported"
                                 ? "DeepInfra-reported estimated cost."
                                 : result.costSource === "catalog"
                                   ? "Estimated from the catalog price snapshot."
+                                  : result.costSource === "catalog-estimate"
+                                    ? "Locally estimated tokens multiplied by the catalog price snapshot."
                                   : "Cost was not available."
                             }
                           />
@@ -1478,34 +1755,9 @@ export default function Home() {
                     </article>
                   );
                 })}
+                </div>
               </section>
 
-              <section className="composer" aria-label="Prompt composer">
-                <div className="composer-meta">
-                  <span>NEW FAIR TEST</span>
-                  <small>
-                    {selectedModels.length} models · key {apiKey ? "in memory" : "not connected"} ·
-                    client-observed timing
-                  </small>
-                </div>
-                <div className="composer-row">
-                  <textarea
-                    ref={promptRef}
-                    rows={3}
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    placeholder="Give every contender the same prompt…"
-                  />
-                  <button
-                    type="button"
-                    className={`run-button ${isRunning ? "stop" : ""}`}
-                    onClick={() => void runComparison()}
-                  >
-                    <span>{isRunning ? "Stop all" : `Run ${selectedModels.length} models`}</span>
-                    <kbd>{isRunning ? "ESC" : "⌘ ↵"}</kbd>
-                  </button>
-                </div>
-              </section>
             </div>
           ) : null}
 

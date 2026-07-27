@@ -35,6 +35,9 @@ test("server-renders the Arena product shell and metadata", async () => {
   assert.match(html, /Compare models/);
   assert.match(html, /Connect API/);
   assert.match(html, /aria-label="Models"/);
+  assert.match(html, /Responses and evidence/);
+  assert.match(html, /Model metric overview/);
+  assert.match(html, /How to read this:/);
   assert.match(html, /og\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

@@ -773,11 +773,15 @@ function normalizeUsage(value: unknown): ChatUsage | null {
 
 function contentText(value: unknown): string {
   if (typeof value === "string") return value;
+  if (isRecord(value)) {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.content === "string") return value.content;
+    if (typeof value.output_text === "string") return value.output_text;
+    return "";
+  }
   if (!Array.isArray(value)) return "";
   return value
-    .map((part) =>
-      isRecord(part) && typeof part.text === "string" ? part.text : "",
-    )
+    .map((part) => contentText(part))
     .join("");
 }
 
@@ -963,9 +967,15 @@ export async function streamChatCompletion({
     if (typeof choice.finish_reason === "string") {
       finishReason = choice.finish_reason;
     }
-    const delta = isRecord(choice.delta) ? choice.delta : null;
+    const delta = isRecord(choice.delta)
+      ? choice.delta
+      : isRecord(choice.message)
+        ? choice.message
+        : null;
     if (!delta) return false;
-    const output = contentText(delta.content);
+    const output = contentText(
+      delta.content ?? delta.output_text ?? choice.text ?? event.output_text,
+    );
     if (output) await onDelta(output);
     const reasoning = contentText(
       delta.reasoning_content ?? delta.reasoning ?? delta.thinking,
@@ -973,6 +983,13 @@ export async function streamChatCompletion({
     if (reasoning && onReasoning) await onReasoning(reasoning);
     return false;
   };
+
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.text();
+    await consume(payload);
+    return { finishReason, usage, requestId };
+  }
 
   if (!response.body) {
     throw new DeepInfraError(
