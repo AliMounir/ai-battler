@@ -651,6 +651,14 @@ main {
   font-size: 15px;
 }
 
+.tray-label small {
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+
 .model-chip {
   position: relative;
   display: flex;
@@ -660,6 +668,18 @@ main {
   gap: 10px;
   border-right: 1px solid var(--line);
   padding: 12px 10px 12px 14px;
+  cursor: grab;
+  transition: background 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
+}
+
+.model-chip.dragging {
+  cursor: grabbing;
+  opacity: 0.48;
+}
+
+.model-chip.drop-target {
+  background: rgb(110 139 255 / 10%);
+  box-shadow: inset 2px 0 0 var(--action);
 }
 
 .model-chip::before {
@@ -679,6 +699,14 @@ main {
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
+}
+
+.drag-handle {
+  color: var(--ink-faint);
+  font-size: 14px;
+  letter-spacing: -4px;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .model-chip > div {
@@ -709,6 +737,7 @@ main {
   background: transparent;
   color: var(--ink-faint);
   font-size: 18px;
+  cursor: pointer;
 }
 
 .model-chip > button:hover {
@@ -4014,7 +4043,7 @@ body {
   margin-top: 18px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 10px 10px 0 0;
+  border-radius: 10px;
   background: var(--surface-raised);
   color: var(--ink);
 }

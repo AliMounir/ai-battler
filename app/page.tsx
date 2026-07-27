@@ -12,7 +12,7 @@ import {
   fetchModelCatalog,
   streamChatCompletion,
 } from "./lib/deepinfra";
-import { scoreModelFit } from "./lib/lab-metrics";
+import { reorderModelIds } from "./lib/model-order";
 
 type View = "compare" | "catalog" | "runs";
 type CatalogView = "table" | "map";
@@ -535,6 +535,8 @@ export default function Home() {
   const [connectionMessage, setConnectionMessage] = useState("");
   const [showConnection, setShowConnection] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [draggedModelId, setDraggedModelId] = useState<string | null>(null);
+  const [dropTargetModelId, setDropTargetModelId] = useState<string | null>(null);
   const [pickerSearch, setPickerSearch] = useState("");
   const [catalogSearch, setCatalogSearch] = useState("");
   const [category, setCategory] = useState("all");
@@ -634,22 +636,16 @@ export default function Home() {
         .filter(Boolean) as LabModel[],
     [modelById, selectedModelIds],
   );
+  const orderedResults = useMemo(() => {
+    const resultsByModelId = new Map(results.map((result) => [result.modelId, result]));
+    const selectedResults = selectedModelIds.flatMap((modelId) => {
+      const result = resultsByModelId.get(modelId);
+      return result ? [result] : [];
+    });
+    const unselectedResults = results.filter((result) => !selectedModelIds.includes(result.modelId));
+    return [...selectedResults, ...unselectedResults];
+  }, [results, selectedModelIds]);
   const rank = useMemo(() => rankResults(results), [results]);
-  const fitResult = useMemo(
-    () =>
-      scoreModelFit(
-        results.map((result) => ({
-          id: result.modelId,
-          outcome: result.status === "complete" ? ("succeeded" as const) : ("failed" as const),
-          quality: result.rating == null ? null : result.rating * 20,
-          costCents: result.cost == null ? null : result.cost * 100,
-          ttftMs: result.ttftMs,
-          throughputTokensPerSecond: result.tokensPerSecond,
-        })),
-      ),
-    [results],
-  );
-  const bestFit = fitResult.status === "ok" ? fitResult.scores[0] : null;
   const isRunning = results.some(
     (result) => result.status === "queued" || result.status === "streaming",
   );
@@ -1150,6 +1146,22 @@ export default function Home() {
     });
   }
 
+  function reorderSelectedModels(draggedId: string, targetId: string) {
+    const nextModelIds = reorderModelIds(selectedModelIds, draggedId, targetId);
+    if (nextModelIds === selectedModelIds) return;
+
+    setSelectedModelIds(nextModelIds);
+    setResults((current) => {
+      const resultsByModelId = new Map(current.map((result) => [result.modelId, result]));
+      const ordered = nextModelIds.flatMap((modelId) => {
+        const result = resultsByModelId.get(modelId);
+        return result ? [result] : [];
+      });
+      const leftovers = current.filter((result) => !nextModelIds.includes(result.modelId));
+      return [...ordered, ...leftovers];
+    });
+  }
+
   function setRating(modelId: string, rating: number) {
     updateResult(modelId, { rating });
   }
@@ -1231,24 +1243,6 @@ export default function Home() {
   function renderSortLabel(label: string, key: SortKey) {
     return `${label}${sortKey === key ? (sortDirection === "asc" ? " ↑" : " ↓") : ""}`;
   }
-
-  const verdict = useMemo(() => {
-    if (!results.length) return "Run the same prompt across your contenders to reveal the trade-offs.";
-    const finished = results.filter((result) => result.status === "complete");
-    if (!finished.length) {
-      return isRunning
-        ? "The lab is collecting first-token, throughput, usage, and cost evidence."
-        : "No contender completed this run.";
-    }
-    const qualityName = rank.quality
-      ? shortName(rank.quality)
-      : "Quality needs your blind rating";
-    const fastName = rank.fastest ? shortName(rank.fastest) : "no TTFT result";
-    const cheapName = rank.cheapest ? shortName(rank.cheapest) : "no cost result";
-    return rank.quality
-      ? `${qualityName} leads your manual quality rating; ${fastName} reached the first token fastest and ${cheapName} cost least.`
-      : `${fastName} reached the first token fastest; ${cheapName} cost least. Rate outputs to add a quality signal.`;
-  }, [isRunning, rank, results]);
 
   return (
     <div className="app-shell">
@@ -1401,19 +1395,52 @@ export default function Home() {
                 </section>
               ) : null}
 
-              <section className="model-tray" aria-label="Selected comparison models">
+              <section className="model-tray" aria-label="Selected comparison models" role="list">
                 <div className="tray-label">
                   <span>CONTENDERS</span>
                   <strong>{selectedModels.length}/5</strong>
+                  <small>DRAG TO ORDER</small>
                 </div>
                 {selectedModels.map((model, index) => (
                   <div
-                    className="model-chip"
+                    className={`model-chip ${
+                      draggedModelId === model.id ? "dragging" : ""
+                    } ${dropTargetModelId === model.id ? "drop-target" : ""}`}
                     key={model.id}
                     style={{ "--model-color": MODEL_COLORS[index] } as CSSProperties}
                     title={model.id}
+                    role="listitem"
+                    draggable
+                    onDragStart={(event) => {
+                      setDraggedModelId(model.id);
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", model.id);
+                    }}
+                    onDragEnter={() => {
+                      if (draggedModelId && draggedModelId !== model.id) {
+                        setDropTargetModelId(model.id);
+                      }
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const draggedId = event.dataTransfer.getData("text/plain") || draggedModelId;
+                      if (draggedId) reorderSelectedModels(draggedId, model.id);
+                      setDraggedModelId(null);
+                      setDropTargetModelId(null);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedModelId(null);
+                      setDropTargetModelId(null);
+                    }}
                   >
                     <span className="model-number">{String(index + 1).padStart(2, "0")}</span>
+                    <span className="drag-handle" aria-hidden="true">
+                      ⠿
+                    </span>
                     <div>
                       <strong>{model.name || shortName(model.id)}</strong>
                       <small>{providerName(model.provider)}</small>
@@ -1468,43 +1495,6 @@ export default function Home() {
                 </div>
               </section>
 
-              <section className="synopsis">
-                <div className="synopsis-copy">
-                  <span className="eyebrow">
-                    {results.some((result) => result.isExample)
-                      ? "EXAMPLE RUN · REPLACE WITH LIVE EVIDENCE"
-                      : "RUN SYNOPSIS"}
-                  </span>
-                  <h2>{verdict}</h2>
-                  <p>
-                    Quality is never inferred from length or brand. Add manual ratings, then
-                    repeat important tests to turn a provisional result into evidence.
-                  </p>
-                </div>
-                <div className="winner-board">
-                  <div>
-                    <span>QUALITY</span>
-                    <strong>{rank.quality ? shortName(rank.quality) : "Needs rating"}</strong>
-                    <small>Manual signal</small>
-                  </div>
-                  <div>
-                    <span>FIRST TOKEN</span>
-                    <strong>{rank.fastest ? shortName(rank.fastest) : "—"}</strong>
-                    <small>Observed here</small>
-                  </div>
-                  <div>
-                    <span>LOWEST COST</span>
-                    <strong>{rank.cheapest ? shortName(rank.cheapest) : "—"}</strong>
-                    <small>Reported / derived</small>
-                  </div>
-                  <div>
-                    <span>BEST WEIGHTED FIT</span>
-                    <strong>{bestFit ? shortName(bestFit.candidateId) : "Needs ratings"}</strong>
-                    <small>{bestFit ? `${bestFit.score.toFixed(0)} / 100 · provisional` : "Q55 · C20 · T25"}</small>
-                  </div>
-                </div>
-              </section>
-
               <section className="prompt-band">
                 <div>
                   <span>PROMPT 01</span>
@@ -1541,7 +1531,7 @@ export default function Home() {
                     <span role="columnheader">Latency</span>
                     <span role="columnheader">Cost</span>
                   </div>
-                  {results.map((result, index) => {
+                  {orderedResults.map((result, index) => {
                     const model =
                       modelById.get(result.modelId) ??
                       DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
@@ -1584,11 +1574,11 @@ export default function Home() {
                   className="response-grid"
                   style={
                     {
-                      "--lane-count": Math.max(results.length, 2),
+                      "--lane-count": Math.max(orderedResults.length, 2),
                     } as CSSProperties
                   }
                 >
-                {results.map((result, index) => {
+                {orderedResults.map((result, index) => {
                   const model =
                     modelById.get(result.modelId) ??
                     DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
