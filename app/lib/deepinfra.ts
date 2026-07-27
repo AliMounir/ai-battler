@@ -207,6 +207,8 @@ export interface ChatUsage {
 }
 
 export interface StreamChatCompletionResult {
+  content: string;
+  reasoning: string;
   finishReason: string | null;
   usage: ChatUsage | null;
   requestId: string | null;
@@ -774,9 +776,14 @@ function normalizeUsage(value: unknown): ChatUsage | null {
 function contentText(value: unknown): string {
   if (typeof value === "string") return value;
   if (isRecord(value)) {
-    if (typeof value.text === "string") return value.text;
-    if (typeof value.content === "string") return value.content;
-    if (typeof value.output_text === "string") return value.output_text;
+    for (const key of ["text", "content", "output_text", "output", "value"] as const) {
+      const candidate = value[key];
+      if (candidate !== undefined) {
+        const parsed = contentText(candidate);
+        if (parsed) return parsed;
+      }
+    }
+    if (Array.isArray(value.parts)) return contentText(value.parts);
     return "";
   }
   if (!Array.isArray(value)) return "";
@@ -927,6 +934,8 @@ export async function streamChatCompletion({
   let finishReason: string | null = null;
   let usage: ChatUsage | null = null;
   let requestId = requestIdFrom(response);
+  let content = "";
+  let reasoningContent = "";
 
   const consume = async (payload: string): Promise<boolean> => {
     const trimmed = payload.trim();
@@ -971,16 +980,33 @@ export async function streamChatCompletion({
       ? choice.delta
       : isRecord(choice.message)
         ? choice.message
-        : null;
-    if (!delta) return false;
+        : choice;
     const output = contentText(
-      delta.content ?? delta.output_text ?? choice.text ?? event.output_text,
+      delta.content ??
+        delta.output_text ??
+        delta.text ??
+        choice.text ??
+        choice.content ??
+        choice.output_text ??
+        event.output_text ??
+        event.content ??
+        event.output,
     );
-    if (output) await onDelta(output);
+    if (output) {
+      content += output;
+      await onDelta(output);
+    }
     const reasoning = contentText(
-      delta.reasoning_content ?? delta.reasoning ?? delta.thinking,
+      delta.reasoning_content ??
+        delta.reasoning ??
+        delta.thinking ??
+        choice.reasoning_content ??
+        choice.reasoning,
     );
-    if (reasoning && onReasoning) await onReasoning(reasoning);
+    if (reasoning) {
+      reasoningContent += reasoning;
+      if (onReasoning) await onReasoning(reasoning);
+    }
     return false;
   };
 
@@ -988,7 +1014,7 @@ export async function streamChatCompletion({
   if (contentType.includes("application/json")) {
     const payload = await response.text();
     await consume(payload);
-    return { finishReason, usage, requestId };
+    return { content, reasoning: reasoningContent, finishReason, usage, requestId };
   }
 
   if (!response.body) {
@@ -1022,5 +1048,5 @@ export async function streamChatCompletion({
       // The server may have already closed the stream.
     }
   }
-  return { finishReason, usage, requestId };
+  return { content, reasoning: reasoningContent, finishReason, usage, requestId };
 }

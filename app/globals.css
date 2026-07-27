@@ -4070,7 +4070,7 @@ body {
   border: 0;
   background: transparent;
   gap: 14px;
-  padding-top: 14px;
+  padding-top: 8px;
 }
 
 .response-lane:last-child:nth-child(odd) {
@@ -4078,7 +4078,7 @@ body {
 }
 
 .response-lane {
-  min-height: 520px;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -4086,9 +4086,12 @@ body {
 }
 
 .lane-header {
-  top: var(--header-height);
+  position: relative;
+  top: auto;
+  min-height: 60px;
   border-color: var(--line);
   background: rgb(18 22 27 / 95%);
+  padding: 11px 14px;
   backdrop-filter: blur(14px);
 }
 
@@ -4106,7 +4109,47 @@ body {
 }
 
 .response-copy {
-  min-height: 250px;
+  min-height: 210px;
+  padding: 15px 16px 20px;
+}
+
+.response-copy-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.response-copy-label span {
+  color: var(--model-color);
+}
+
+.response-copy-label small {
+  color: var(--ink-faint);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+
+.results-overview {
+  margin-top: 26px;
+}
+
+.results-overview-heading {
+  margin: 0 0 10px 2px;
+}
+
+.results-overview-heading h3 {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .response-mode-note {

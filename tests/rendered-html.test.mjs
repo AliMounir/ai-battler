@@ -62,3 +62,15 @@ test("keeps credentials ephemeral and removes the disposable starter", async () 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await access(new URL("public/og.png", templateRoot));
 });
+
+test("keeps completed comparisons traceable in the interface", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /Run complete and saved in history/);
+  assert.match(page, /setMaxTokensInput\(event\.target\.value\)/);
+  assert.match(page, /PROMPT \{String\(activeRunNumber\)\.padStart\(2, "0"\)\}/);
+  assert.ok(
+    page.indexOf('className="response-grid"') < page.indexOf('aria-label="Model metric overview"'),
+    "the response cards should appear before the overview table",
+  );
+});

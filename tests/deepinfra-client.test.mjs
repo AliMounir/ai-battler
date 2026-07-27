@@ -73,4 +73,43 @@ test("reads reasoning, structured content, usage, and full-message fallbacks", a
 
   assert.equal(fallbackOutput.join(""), "Non-streaming fallback.");
   assert.equal(fallback.finishReason, "stop");
+
+  globalThis.fetch = async () =>
+    new Response(
+      [
+        'data: {"choices":[{"delta":{"content":{"type":"output_text","text":{"value":"Nested "}}}}]}',
+        "",
+        'data: {"choices":[{"message":{"content":{"output_text":"response."}},"finish_reason":"stop"}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+  const nestedOutput = [];
+  const nested = await streamChatCompletion({
+    apiKey: "test-key",
+    model: "provider/model",
+    messages: [{ role: "user", content: "One more" }],
+    onDelta: (value) => nestedOutput.push(value),
+  });
+
+  assert.equal(nestedOutput.join(""), "Nested response.");
+  assert.equal(nested.content, "Nested response.");
+
+  globalThis.fetch = async () =>
+    new Response(
+      ['data: {"choices":[{"text":"Direct choice payload.","finish_reason":"stop"}]}', "", "data: [DONE]", ""].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+  const direct = await streamChatCompletion({
+    apiKey: "test-key",
+    model: "provider/model",
+    messages: [{ role: "user", content: "Final fallback" }],
+    onDelta: () => {},
+  });
+
+  assert.equal(direct.content, "Direct choice payload.");
 });

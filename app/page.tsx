@@ -68,6 +68,7 @@ type LaneResult = {
 
 type SavedRun = {
   id: string;
+  sequence?: number;
   createdAt: string;
   title: string;
   prompt: string;
@@ -86,9 +87,25 @@ type SortKey =
   | "type";
 
 const MODEL_COLORS = ["#6E8BFF", "#FF795F", "#42C7B5", "#A98AFF", "#E9B949"];
+const MIN_OUTPUT_TOKENS = 64;
+const MAX_OUTPUT_TOKENS = 16384;
 const DEFAULT_PROMPT =
   "Design a PostgreSQL schema and zero-downtime migration strategy for a multi-tenant analytics product. Include SQL, state assumptions, and explain the trade-offs.";
 const STORAGE_KEY = "arena-saved-runs-v1";
+
+function normalizeOutputTokenLimit(value: string | number) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return MIN_OUTPUT_TOKENS;
+  return Math.min(MAX_OUTPUT_TOKENS, Math.max(MIN_OUTPUT_TOKENS, parsed));
+}
+
+function createRunId() {
+  return `RUN-${Date.now().toString(36).toUpperCase()}`;
+}
+
+function observedNow() {
+  return performance.now();
+}
 
 const DEMO_MODELS: LabModel[] = [
   {
@@ -524,6 +541,9 @@ export default function Home() {
   );
   const [temperature, setTemperature] = useState(0.2);
   const [maxTokens, setMaxTokens] = useState(1200);
+  const [maxTokensInput, setMaxTokensInput] = useState("1200");
+  const [activeRunNumber, setActiveRunNumber] = useState(1);
+  const [nextRunNumber, setNextRunNumber] = useState(1);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [blindReview, setBlindReview] = useState(false);
   const [results, setResults] = useState<LaneResult[]>(DEMO_RESULTS);
@@ -550,6 +570,8 @@ export default function Home() {
   const [monthlyInput, setMonthlyInput] = useState(10);
   const [monthlyOutput, setMonthlyOutput] = useState(2);
   const controllersRef = useRef<Map<string, AbortController>>(new Map());
+  const pendingRunRef = useRef<Omit<SavedRun, "results"> | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const catalogSearchRef = useRef<HTMLInputElement | null>(null);
 
@@ -591,39 +613,19 @@ export default function Home() {
       void loadCatalog();
       try {
         const stored = window.localStorage.getItem(STORAGE_KEY);
-        if (stored) setSavedRuns(JSON.parse(stored) as SavedRun[]);
+        if (stored) {
+          const runs = JSON.parse(stored) as SavedRun[];
+          setSavedRuns(runs);
+          setNextRunNumber(
+            Math.max(runs.length, ...runs.map((run) => run.sequence ?? 0), 0) + 1,
+          );
+        }
       } catch {
         // A blocked storage surface should not make the lab unusable.
       }
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadCatalog]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setShowModelPicker(true);
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && view === "compare") {
-        event.preventDefault();
-        void runComparison();
-      }
-      if (event.key === "/" && view === "catalog") {
-        const target = event.target as HTMLElement;
-        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
-          event.preventDefault();
-          catalogSearchRef.current?.focus();
-        }
-      }
-      if (event.key === "Escape") {
-        setShowConnection(false);
-        setShowModelPicker(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  });
 
   const modelById = useMemo(
     () => new Map(models.map((model) => [model.id, model])),
@@ -649,6 +651,25 @@ export default function Home() {
   const isRunning = results.some(
     (result) => result.status === "queued" || result.status === "streaming",
   );
+  useEffect(() => {
+    const pendingRun = pendingRunRef.current;
+    if (!pendingRun || isRunning) return;
+    const pendingModelIds = new Set(pendingRun.modelIds);
+    const completedRunResults = results.filter((result) => pendingModelIds.has(result.modelId));
+    if (completedRunResults.length !== pendingRun.modelIds.length) return;
+
+    pendingRunRef.current = null;
+    const run: SavedRun = { ...pendingRun, results: completedRunResults };
+    if (savedRuns.some((saved) => saved.id === run.id)) return;
+    const next = [run, ...savedRuns].slice(0, 50);
+    setSavedRuns(next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      setRunMessage("Run complete and saved in history.");
+    } catch {
+      setRunMessage("Run complete, but this browser could not save its history.");
+    }
+  }, [isRunning, results, savedRuns]);
   const detailModel = detailModelId ? modelById.get(detailModelId) ?? null : null;
 
   const categories = useMemo(() => {
@@ -829,9 +850,25 @@ export default function Home() {
       setRunMessage("Write a prompt before starting a run.");
       return;
     }
+    const runMaxTokens = commitMaxTokens();
+    const runNumber = nextRunNumber;
+    const runId = createRunId();
 
     setRunMessage("");
     setActivePrompt(frozenPrompt);
+    setActiveRunNumber(runNumber);
+    setNextRunNumber((current) => Math.max(current + 1, runNumber + 1));
+    currentRunIdRef.current = runId;
+    pendingRunRef.current = {
+      id: runId,
+      sequence: runNumber,
+      createdAt: new Date().toISOString(),
+      title: frozenPrompt.split(/[.!?]/)[0].slice(0, 72) || "Untitled comparison",
+      prompt: frozenPrompt,
+      systemPrompt,
+      settings: { temperature, maxTokens: runMaxTokens },
+      modelIds: selectedModels.map((model) => model.id),
+    };
     controllersRef.current.forEach((controller) => controller.abort());
     controllersRef.current.clear();
     setResults(
@@ -877,7 +914,7 @@ export default function Home() {
             ],
             settings: {
               temperature,
-              maxTokens,
+              maxTokens: runMaxTokens,
             },
             signal: controller.signal,
             onDelta: (delta: string) => {
@@ -922,20 +959,22 @@ export default function Home() {
 
           const endedAt = performance.now();
           const reportedUsage = (response.usage ?? streamedUsage) as Usage | null;
+          const finalContent = receivedContent || response.content;
+          const finalReasoning = receivedReasoning || response.reasoning;
           const usage =
             reportedUsage ??
             estimateUsage(
               frozenPrompt,
               systemPrompt,
-              receivedContent,
-              receivedReasoning,
+              finalContent,
+              finalReasoning,
             );
           const reportedCompletionTokens =
             reportedUsage?.completion_tokens && reportedUsage.completion_tokens > 0
               ? reportedUsage.completion_tokens
               : null;
           const estimatedCompletionTokens = estimateTokenCount(
-            [receivedReasoning, receivedContent].filter(Boolean).join("\n"),
+            [finalReasoning, finalContent].filter(Boolean).join("\n"),
           );
           const completionTokens =
             reportedCompletionTokens ?? (estimatedCompletionTokens || null);
@@ -948,6 +987,8 @@ export default function Home() {
           const fallbackCost = estimateCatalogCost(model, usage);
           updateResult(model.id, {
             status: "complete",
+            content: finalContent,
+            reasoning: finalReasoning,
             endedAt,
             totalMs: endedAt - startedAt,
             ttftMs: firstTokenAt ? firstTokenAt - startedAt : null,
@@ -1005,9 +1046,10 @@ export default function Home() {
     }
     const model = modelById.get(modelId);
     if (!model) return;
+    const rerunMaxTokens = commitMaxTokens();
     const controller = new AbortController();
     controllersRef.current.set(model.id, controller);
-    const startedAt = performance.now();
+    const startedAt = observedNow();
     let firstTokenAt: number | undefined;
     updateResult(model.id, {
       status: "streaming",
@@ -1037,7 +1079,7 @@ export default function Home() {
             : []),
           { role: "user" as const, content: activePrompt },
         ],
-        settings: { temperature, maxTokens },
+        settings: { temperature, maxTokens: rerunMaxTokens },
         signal: controller.signal,
         onDelta: (delta: string) => {
           receivedContent += delta;
@@ -1076,22 +1118,24 @@ export default function Home() {
           updateResult(model.id, { usage, usageSource: "reported" });
         },
       });
-      const endedAt = performance.now();
+      const endedAt = observedNow();
       const reportedUsage = (response.usage ?? streamedUsage) as Usage | null;
+      const finalContent = receivedContent || response.content;
+      const finalReasoning = receivedReasoning || response.reasoning;
       const usage =
         reportedUsage ??
         estimateUsage(
           activePrompt,
           systemPrompt,
-          receivedContent,
-          receivedReasoning,
+          finalContent,
+          finalReasoning,
         );
       const reportedCompletionTokens =
         reportedUsage?.completion_tokens && reportedUsage.completion_tokens > 0
           ? reportedUsage.completion_tokens
           : null;
       const estimatedCompletionTokens = estimateTokenCount(
-        [receivedReasoning, receivedContent].filter(Boolean).join("\n"),
+        [finalReasoning, finalContent].filter(Boolean).join("\n"),
       );
       const completionTokens =
         reportedCompletionTokens ?? (estimatedCompletionTokens || null);
@@ -1099,6 +1143,8 @@ export default function Home() {
       const fallback = estimateCatalogCost(model, usage);
       updateResult(model.id, {
         status: "complete",
+        content: finalContent,
+        reasoning: finalReasoning,
         usage,
         endedAt,
         totalMs: endedAt - startedAt,
@@ -1121,7 +1167,7 @@ export default function Home() {
         finishReason: response.finishReason ?? "stop",
       });
     } catch (error) {
-      const endedAt = performance.now();
+      const endedAt = observedNow();
       updateResult(model.id, {
         status: controller.signal.aborted ? "aborted" : "error",
         endedAt,
@@ -1166,15 +1212,37 @@ export default function Home() {
     updateResult(modelId, { rating });
   }
 
+  function commitMaxTokens() {
+    const next = normalizeOutputTokenLimit(maxTokensInput);
+    setMaxTokens(next);
+    setMaxTokensInput(String(next));
+    return next;
+  }
+
   function saveRun() {
     if (!results.length) return;
+    const savedMaxTokens = commitMaxTokens();
+    const activeRunId = currentRunIdRef.current;
+    if (
+      activeRunId &&
+      (savedRuns.some((run) => run.id === activeRunId) ||
+        pendingRunRef.current?.id === activeRunId)
+    ) {
+      setRunMessage(
+        pendingRunRef.current?.id === activeRunId
+          ? "This run will be saved when it finishes."
+          : "This run is already saved in history.",
+      );
+      return;
+    }
     const run: SavedRun = {
-      id: `RUN-${Date.now().toString(36).toUpperCase()}`,
+      id: activeRunId ?? createRunId(),
+      sequence: activeRunNumber,
       createdAt: new Date().toISOString(),
       title: activePrompt.split(/[.!?]/)[0].slice(0, 72) || "Untitled comparison",
       prompt: activePrompt,
       systemPrompt,
-      settings: { temperature, maxTokens },
+      settings: { temperature, maxTokens: savedMaxTokens },
       modelIds: results.map((result) => result.modelId),
       results,
     };
@@ -1193,7 +1261,11 @@ export default function Home() {
     setPrompt(run.prompt);
     setSystemPrompt(run.systemPrompt);
     setTemperature(run.settings.temperature);
-    setMaxTokens(run.settings.maxTokens);
+    const loadedMaxTokens = normalizeOutputTokenLimit(run.settings.maxTokens);
+    setMaxTokens(loadedMaxTokens);
+    setMaxTokensInput(String(loadedMaxTokens));
+    setActiveRunNumber(run.sequence ?? activeRunNumber);
+    currentRunIdRef.current = run.id;
     setSelectedModelIds(run.modelIds.slice(0, 5));
     setResults(run.results);
     setView("compare");
@@ -1243,6 +1315,32 @@ export default function Home() {
   function renderSortLabel(label: string, key: SortKey) {
     return `${label}${sortKey === key ? (sortDirection === "asc" ? " ↑" : " ↓") : ""}`;
   }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setShowModelPicker(true);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && view === "compare") {
+        event.preventDefault();
+        void runComparison();
+      }
+      if (event.key === "/" && view === "catalog") {
+        const target = event.target as HTMLElement;
+        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
+          event.preventDefault();
+          catalogSearchRef.current?.focus();
+        }
+      }
+      if (event.key === "Escape") {
+        setShowConnection(false);
+        setShowModelPicker(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
     <div className="app-shell">
@@ -1324,7 +1422,7 @@ export default function Home() {
               <section className="run-strip" aria-label="Run setup">
                 <div className="run-id">
                   <span className="eyebrow">CURRENT EXPERIMENT</span>
-                  <strong>RUN–{new Date().toISOString().slice(5, 10).replace("-", "")}</strong>
+                  <strong>RUN–{String(activeRunNumber).padStart(3, "0")}</strong>
                 </div>
                 <div className="fairness-lock">
                   <span aria-hidden="true">◆</span>
@@ -1380,12 +1478,14 @@ export default function Home() {
                     <span>Maximum output tokens</span>
                     <input
                       type="number"
-                      min="64"
-                      max="16384"
-                      value={maxTokens}
-                      onChange={(event) =>
-                        setMaxTokens(Math.max(64, Number(event.target.value) || 64))
-                      }
+                      min={MIN_OUTPUT_TOKENS}
+                      max={MAX_OUTPUT_TOKENS}
+                      value={maxTokensInput}
+                      onChange={(event) => setMaxTokensInput(event.target.value)}
+                      onBlur={commitMaxTokens}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
                     />
                   </label>
                   <div className="settings-note">
@@ -1497,7 +1597,7 @@ export default function Home() {
 
               <section className="prompt-band">
                 <div>
-                  <span>PROMPT 01</span>
+                  <span>PROMPT {String(activeRunNumber).padStart(2, "0")}</span>
                   <small>YOU · FAIR TEST · {activePrompt.length} CHARACTERS</small>
                 </div>
                 <p>“{activePrompt}”</p>
@@ -1509,7 +1609,7 @@ export default function Home() {
                     <span className="eyebrow">MODEL RESULTS</span>
                     <h2 id="results-title">Responses and evidence</h2>
                     <p>
-                      Scan the measurements first, then read each answer at a comfortable width.
+                      Read each answer first, then compare the measurements below.
                     </p>
                   </div>
                   <div className="results-progress" aria-live="polite">
@@ -1520,55 +1620,6 @@ export default function Home() {
                     <span>{isRunning ? "models finished" : "models completed"}</span>
                   </div>
                 </header>
-
-                <div className="metric-matrix" role="table" aria-label="Model metric overview">
-                  <div className="metric-matrix-head" role="row">
-                    <span role="columnheader">Model</span>
-                    <span role="columnheader">Status</span>
-                    <span role="columnheader">TTFT</span>
-                    <span role="columnheader">Speed</span>
-                    <span role="columnheader">Tokens</span>
-                    <span role="columnheader">Latency</span>
-                    <span role="columnheader">Cost</span>
-                  </div>
-                  {orderedResults.map((result, index) => {
-                    const model =
-                      modelById.get(result.modelId) ??
-                      DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
-                    if (!model) return null;
-                    return (
-                      <div
-                        className="metric-matrix-row"
-                        role="row"
-                        key={`overview-${result.modelId}`}
-                        style={{ "--model-color": MODEL_COLORS[index] } as CSSProperties}
-                      >
-                        <span className="matrix-model" role="cell">
-                          <i />
-                          <strong>
-                            {blindReview
-                              ? `Contender ${String.fromCharCode(65 + index)}`
-                              : model.name || shortName(model.id)}
-                          </strong>
-                        </span>
-                        <span role="cell">
-                          <i className={`matrix-status status-${result.status}`} />
-                          {statusLabel(result.status)}
-                        </span>
-                        <span role="cell">{formatTtft(result)}</span>
-                        <span role="cell">{formatSpeed(result)}</span>
-                        <span role="cell">{formatUsage(result)}</span>
-                        <span role="cell">{formatLatency(result)}</span>
-                        <span role="cell">{formatResultCost(result)}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="measurement-note">
-                  <strong>How to read this:</strong> ≈ marks a local estimate used only when
-                  DeepInfra omits token usage or cost. “Unavailable” means the provider did not
-                  return enough evidence to calculate that metric.
-                </p>
 
                 <div
                   className="response-grid"
@@ -1617,6 +1668,26 @@ export default function Home() {
                       ) : null}
 
                       <div className="response-copy">
+                        <div className="response-copy-label">
+                          <span>
+                            {visibleOutput
+                              ? reasoningOnly
+                                ? "REASONING OUTPUT"
+                                : "MODEL OUTPUT"
+                              : result.status === "complete"
+                                ? "NO MODEL OUTPUT"
+                                : "MODEL OUTPUT"}
+                          </span>
+                          <small>
+                            {visibleOutput
+                              ? reasoningOnly
+                                ? "Working trace"
+                                : "Final response"
+                              : result.status === "streaming"
+                                ? "Receiving response"
+                                : "Awaiting response"}
+                          </small>
+                        </div>
                         {visibleOutput ? (
                           <>
                             {reasoningOnly ? (
@@ -1644,7 +1715,7 @@ export default function Home() {
                           </div>
                         ) : result.status === "complete" ? (
                           <div className="lane-empty-state">
-                            <strong>No text was returned.</strong>
+                            <strong>No final response was returned.</strong>
                             <p>
                               DeepInfra completed this request
                               {result.finishReason
@@ -1746,6 +1817,61 @@ export default function Home() {
                   );
                 })}
                 </div>
+
+                <section className="results-overview" aria-labelledby="metrics-title">
+                  <div className="results-overview-heading">
+                    <span className="eyebrow">MEASUREMENT OVERVIEW</span>
+                    <h3 id="metrics-title">Compare the run at a glance</h3>
+                  </div>
+                  <div className="metric-matrix" role="table" aria-label="Model metric overview">
+                    <div className="metric-matrix-head" role="row">
+                      <span role="columnheader">Model</span>
+                      <span role="columnheader">Status</span>
+                      <span role="columnheader">TTFT</span>
+                      <span role="columnheader">Speed</span>
+                      <span role="columnheader">Tokens</span>
+                      <span role="columnheader">Latency</span>
+                      <span role="columnheader">Cost</span>
+                    </div>
+                    {orderedResults.map((result, index) => {
+                      const model =
+                        modelById.get(result.modelId) ??
+                        DEMO_MODELS.find((candidate) => candidate.id === result.modelId);
+                      if (!model) return null;
+                      return (
+                        <div
+                          className="metric-matrix-row"
+                          role="row"
+                          key={`overview-${result.modelId}`}
+                          style={{ "--model-color": MODEL_COLORS[index] } as CSSProperties}
+                        >
+                          <span className="matrix-model" role="cell">
+                            <i />
+                            <strong>
+                              {blindReview
+                                ? `Contender ${String.fromCharCode(65 + index)}`
+                                : model.name || shortName(model.id)}
+                            </strong>
+                          </span>
+                          <span role="cell">
+                            <i className={`matrix-status status-${result.status}`} />
+                            {statusLabel(result.status)}
+                          </span>
+                          <span role="cell">{formatTtft(result)}</span>
+                          <span role="cell">{formatSpeed(result)}</span>
+                          <span role="cell">{formatUsage(result)}</span>
+                          <span role="cell">{formatLatency(result)}</span>
+                          <span role="cell">{formatResultCost(result)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="measurement-note">
+                    <strong>How to read this:</strong> ≈ marks a local estimate used only when
+                    DeepInfra omits token usage or cost. “Unavailable” means the provider did not
+                    return enough evidence to calculate that metric.
+                  </p>
+                </section>
               </section>
 
             </div>
